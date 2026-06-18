@@ -12,6 +12,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>WithMe</title>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,700;0,900;1,700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 <style>
 /* ── TOKENS ── */
 :root{
@@ -300,6 +302,7 @@ h1,h2,h3{font-family:"Fraunces",serif}
 .nearby-name{font-size:15px;font-weight:600;color:var(--txt);font-family:"Fraunces",serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nearby-type{font-size:12px;color:var(--txt-lt)}
 .nearby-arrow{color:var(--txt-lt);font-size:18px;flex-shrink:0}
+.nearby-note{font-size:13px;color:var(--txt-mid);line-height:1.55;background:var(--bg-card);border:1px solid var(--border-lt);border-radius:var(--r-sm);padding:13px 14px}
 
 .heart-btn{background:none;border:none;font-size:17px;cursor:pointer;padding:4px;line-height:1;transition:transform 0.15s;flex-shrink:0;position:absolute;top:12px;right:12px}
 .heart-btn:active{transform:scale(1.35)}
@@ -730,9 +733,10 @@ h1,h2,h3{font-family:"Fraunces",serif}
   <div id="gps-result" style="display:none;padding:16px 20px 0">
     <div class="sec-lbl-sm" style="margin-bottom:10px">📍 You appear to be at</div>
     <div class="gps-detected-card" id="gps-detected-card"></div>
-    <!-- Nearby real places -->
+    <!-- Map + nearby real places -->
+    <div id="gps-map" style="display:none;height:220px;border-radius:14px;margin:14px 0 0;overflow:hidden;border:1.5px solid var(--border)"></div>
     <div id="gps-nearby" style="display:none">
-      <div class="sec-lbl-sm" style="margin:18px 0 8px">📍 Places near you — tap where you are</div>
+      <div class="sec-lbl-sm" id="gps-nearby-hdr" style="margin:18px 0 8px">📍 Near you</div>
       <div id="gps-nearby-list"></div>
     </div>
     <div class="sec-lbl-sm" style="margin:14px 0 8px">Or choose a location type</div>
@@ -3303,12 +3307,15 @@ async function fetchNearbyPlaces(lat, lng) {
       };
       const loc = matchNominatimToLoc(data);
       if (!loc) continue; // skip places we can't map to an activity set
+      // Coordinates: nodes have lat/lon; ways/relations have center
+      const plat = el.lat != null ? el.lat : (el.center && el.center.lat);
+      const plon = el.lon != null ? el.lon : (el.center && el.center.lon);
       seen.add(nm.toLowerCase());
-      places.push({ name: nm, loc });
+      places.push({ name: nm, loc, lat: plat, lng: plon });
       if (places.length >= 6) break;
     }
 
-    if (!places.length) { nearbyWrap.style.display = 'none'; return; }
+    if (!places.length) { showNearbyNote(); renderMap(lat, lng, []); return; }
 
     listEl.innerHTML = '';
     places.forEach(p => {
@@ -3322,12 +3329,71 @@ async function fetchNearbyPlaces(lat, lng) {
       card.onclick = () => { S.learn_loc = p.loc; pickLearnLoc(p.loc); };
       listEl.appendChild(card);
     });
+    const hdr = document.getElementById('gps-nearby-hdr');
+    if (hdr) hdr.textContent = '📍 Places near you — tap where you are';
     nearbyWrap.style.display = 'block';
+    renderMap(lat, lng, places);
 
   } catch (err) {
     console.log('Overpass nearby lookup failed:', err);
-    nearbyWrap.style.display = 'none'; // silently fall back to type grid
+    showNearbyNote(); // show a gentle note rather than disappearing
+    renderMap(lat, lng, []); // still show map centered on the user
   }
+}
+
+// Leaflet map showing the user's position + nearby place markers (free OSM tiles)
+let _withmeMap = null;
+function renderMap(lat, lng, places) {
+  const mapEl = document.getElementById('gps-map');
+  if (!mapEl || typeof L === 'undefined' || lat == null || lng == null) return;
+  mapEl.style.display = 'block';
+
+  // Re-create the map fresh each time to avoid stale markers / container issues
+  if (_withmeMap) { _withmeMap.remove(); _withmeMap = null; }
+  _withmeMap = L.map(mapEl, { zoomControl: true, attributionControl: true })
+    .setView([lat, lng], 16);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap',
+  }).addTo(_withmeMap);
+
+  // "You are here" marker (blue dot)
+  L.circleMarker([lat, lng], {
+    radius: 8, color: '#1D9E75', fillColor: '#1D9E75', fillOpacity: 0.9, weight: 3,
+  }).addTo(_withmeMap).bindPopup('You are here');
+
+  // Nearby place markers — tapping one selects that location
+  const pts = [[lat, lng]];
+  (places || []).forEach(p => {
+    if (p.lat == null || p.lng == null) return;
+    pts.push([p.lat, p.lng]);
+    const m = L.marker([p.lat, p.lng]).addTo(_withmeMap);
+    m.bindPopup(`<strong>${p.loc.emoji} ${p.name}</strong><br>${p.loc.name}`);
+    m.on('click', () => { S.learn_loc = p.loc; pickLearnLoc(p.loc); });
+  });
+
+  // Fit all points if we have more than just the user
+  if (pts.length > 1) {
+    _withmeMap.fitBounds(pts, { padding: [30, 30], maxZoom: 17 });
+  }
+
+  // Leaflet needs a size recalc when shown inside a previously-hidden container
+  setTimeout(() => { if (_withmeMap) _withmeMap.invalidateSize(); }, 100);
+}
+
+// Friendly placeholder when no nearby places are found (e.g. at home) or the
+// lookup fails — reassures the user the feature works and points to the grid.
+function showNearbyNote() {
+  const nearbyWrap = document.getElementById('gps-nearby');
+  const listEl = document.getElementById('gps-nearby-list');
+  if (!nearbyWrap || !listEl) return;
+  const hdr = document.getElementById('gps-nearby-hdr');
+  if (hdr) hdr.textContent = '📍 Near you';
+  listEl.innerHTML =
+    `<div class="nearby-note">📍 No named places found right at your spot — ` +
+    `this works best when you're out (a shop, park, or café). ` +
+    `Just pick your location type below.</div>`;
+  nearbyWrap.style.display = 'block';
 }
 
 function showGpsResult(detectedLoc, lat, lng) {
@@ -3335,9 +3401,11 @@ function showGpsResult(detectedLoc, lat, lng) {
   const detectedCard = document.getElementById('gps-detected-card');
   resultEl.style.display = 'block';
 
-  // Hide stale nearby list until a fresh lookup populates it
+  // Hide stale nearby list + map until a fresh lookup populates them
   const nearbyWrap = document.getElementById('gps-nearby');
   if (nearbyWrap) nearbyWrap.style.display = 'none';
+  const mapEl = document.getElementById('gps-map');
+  if (mapEl) mapEl.style.display = 'none';
 
   // Remove any confirm button left from a previous detection
   const oldBtn = resultEl.querySelector('.gps-confirm-btn');
@@ -3415,6 +3483,9 @@ function resetGpsScreen() {
   document.getElementById('gps-error').style.display = 'none';
   const nb = document.getElementById('gps-nearby');
   if (nb) nb.style.display = 'none';
+  const mp = document.getElementById('gps-map');
+  if (mp) mp.style.display = 'none';
+  if (_withmeMap) { _withmeMap.remove(); _withmeMap = null; }
   // Also reset address lookup
   resetAddressScreen();
 }
