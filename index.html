@@ -3262,15 +3262,34 @@ async function matchLocationToPlace(lat, lng) {
   fetchNearbyPlaces(lat, lng);
 }
 
-// Query OpenStreetMap Overpass for named places within ~120m, classify each,
-// and render tappable cards. Free, no API key. Best-effort: stays hidden on failure.
+// Haversine distance in metres between two lat/lng points
+function distMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat/2)**2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Human-friendly distance (feet under ~0.2mi, else miles) for US users
+function fmtDist(m) {
+  if (m == null) return '';
+  const miles = m / 1609.34;
+  if (miles < 0.2) return Math.round(m * 3.281 / 10) * 10 + ' ft';
+  return miles.toFixed(miles < 10 ? 1 : 0) + ' mi';
+}
+
+// Query OpenStreetMap Overpass for named places within radius, classify each,
+// and render tappable cards + map markers. Free, no API key. Best-effort.
 async function fetchNearbyPlaces(lat, lng) {
   const nearbyWrap = document.getElementById('gps-nearby');
   const listEl = document.getElementById('gps-nearby-list');
   if (!nearbyWrap || !listEl) return;
 
   // Overpass QL: shops, amenities, leisure, offices with a name, within radius.
-  const radius = 150;
+  const radius = 500;
   const q = `[out:json][timeout:10];(` +
     `nwr(around:${radius},${lat},${lng})[shop][name];` +
     `nwr(around:${radius},${lat},${lng})[amenity~"restaurant|cafe|fast_food|library|post_office|bar|pub|ice_cream|food_court"][name];` +
@@ -3310,10 +3329,15 @@ async function fetchNearbyPlaces(lat, lng) {
       // Coordinates: nodes have lat/lon; ways/relations have center
       const plat = el.lat != null ? el.lat : (el.center && el.center.lat);
       const plon = el.lon != null ? el.lon : (el.center && el.center.lon);
+      if (plat == null || plon == null) continue;
       seen.add(nm.toLowerCase());
-      places.push({ name: nm, loc, lat: plat, lng: plon });
-      if (places.length >= 6) break;
+      const dist = distMeters(lat, lng, plat, plon);
+      places.push({ name: nm, loc, lat: plat, lng: plon, dist });
     }
+
+    // Nearest first, then keep the closest few
+    places.sort((a, b) => a.dist - b.dist);
+    places.length = Math.min(places.length, 6);
 
     if (!places.length) { showNearbyNote(); renderMap(lat, lng, []); return; }
 
@@ -3324,7 +3348,7 @@ async function fetchNearbyPlaces(lat, lng) {
       card.innerHTML =
         `<span class="nearby-emoji">${p.loc.emoji}</span>` +
         `<span class="nearby-body"><span class="nearby-name">${p.name}</span>` +
-        `<span class="nearby-type">${p.loc.name}</span></span>` +
+        `<span class="nearby-type">${p.loc.name} · ${fmtDist(p.dist)}</span></span>` +
         `<span class="nearby-arrow">›</span>`;
       card.onclick = () => { S.learn_loc = p.loc; pickLearnLoc(p.loc); };
       listEl.appendChild(card);
