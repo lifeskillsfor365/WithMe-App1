@@ -3343,6 +3343,16 @@ async function fetchNearbyPlaces(lat, lng) {
 
 // Leaflet map showing the user's position + nearby place markers (free OSM tiles)
 let _withmeMap = null;
+let _withmeNearby = [];
+
+// Called from the "See activities →" button inside a map marker popup
+function selectNearbyPlace(i) {
+  const p = _withmeNearby[i];
+  if (!p || !p.loc) return;
+  S.learn_loc = p.loc;
+  pickLearnLoc(p.loc);
+}
+
 function renderMap(lat, lng, places) {
   const mapEl = document.getElementById('gps-map');
   if (!mapEl || typeof L === 'undefined' || lat == null || lng == null) return;
@@ -3362,15 +3372,29 @@ function renderMap(lat, lng, places) {
     radius: 8, color: '#1D9E75', fillColor: '#1D9E75', fillOpacity: 0.9, weight: 3,
   }).addTo(_withmeMap).bindPopup('You are here');
 
-  // Nearby place markers — tapping one selects that location
+  // Nearby place markers — tap a marker, then tap the button in its popup
   const pts = [[lat, lng]];
-  (places || []).forEach(p => {
+  (places || []).forEach((p, i) => {
     if (p.lat == null || p.lng == null) return;
     pts.push([p.lat, p.lng]);
     const m = L.marker([p.lat, p.lng]).addTo(_withmeMap);
-    m.bindPopup(`<strong>${p.loc.emoji} ${p.name}</strong><br>${p.loc.name}`);
-    m.on('click', () => { S.learn_loc = p.loc; pickLearnLoc(p.loc); });
+    const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}`;
+    const popupHtml =
+      `<div style="text-align:center;min-width:140px">` +
+      `<div style="font-weight:700;font-size:14px;margin-bottom:2px">${p.loc.emoji} ${p.name}</div>` +
+      `<div style="font-size:12px;color:#666;margin-bottom:9px">${p.loc.name}</div>` +
+      `<button onclick="selectNearbyPlace(${i})" ` +
+      `style="background:#1D9E75;color:#fff;border:none;border-radius:20px;` +
+      `padding:7px 16px;font-size:13px;font-weight:700;cursor:pointer;width:100%">See activities →</button>` +
+      `<a href="${navUrl}" target="_blank" rel="noopener" ` +
+      `style="display:block;margin-top:7px;background:#fff;color:#1D6E56;` +
+      `border:1.5px solid #1D9E75;border-radius:20px;padding:6px 16px;font-size:13px;` +
+      `font-weight:700;text-decoration:none">🚗 Directions</a>` +
+      `</div>`;
+    m.bindPopup(popupHtml);
   });
+  // Stash for the popup button to read
+  _withmeNearby = places || [];
 
   // Fit all points if we have more than just the user
   if (pts.length > 1) {
