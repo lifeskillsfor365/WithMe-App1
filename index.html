@@ -292,6 +292,14 @@ h1,h2,h3{font-family:"Fraunces",serif}
 .gps-detected-name{font-family:"Fraunces",serif;font-size:18px;font-weight:700;color:var(--txt)}
 .gps-detected-sub{font-size:12px;color:var(--txt-lt);margin-top:3px}
 .gps-confirm-btn{width:100%;background:var(--teal-mid);color:#fff;border:none;border-radius:100px;padding:15px;font-family:"Fraunces",serif;font-size:15px;font-weight:700;cursor:pointer;margin-top:12px;letter-spacing:-0.3px}
+.nearby-card{width:100%;background:var(--bg-card);border:1.5px solid var(--border);border-radius:var(--r-sm);padding:13px 14px;cursor:pointer;display:flex;align-items:center;gap:12px;text-align:left;transition:all 0.18s;margin-bottom:8px}
+.nearby-card:hover{border-color:var(--teal-border);background:var(--bg-card-lt)}
+.nearby-card:active{transform:scale(0.985)}
+.nearby-emoji{font-size:22px;flex-shrink:0}
+.nearby-body{flex:1;display:flex;flex-direction:column;gap:2px;min-width:0}
+.nearby-name{font-size:15px;font-weight:600;color:var(--txt);font-family:"Fraunces",serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nearby-type{font-size:12px;color:var(--txt-lt)}
+.nearby-arrow{color:var(--txt-lt);font-size:18px;flex-shrink:0}
 
 .heart-btn{background:none;border:none;font-size:17px;cursor:pointer;padding:4px;line-height:1;transition:transform 0.15s;flex-shrink:0;position:absolute;top:12px;right:12px}
 .heart-btn:active{transform:scale(1.35)}
@@ -722,7 +730,12 @@ h1,h2,h3{font-family:"Fraunces",serif}
   <div id="gps-result" style="display:none;padding:16px 20px 0">
     <div class="sec-lbl-sm" style="margin-bottom:10px">📍 You appear to be at</div>
     <div class="gps-detected-card" id="gps-detected-card"></div>
-    <div class="sec-lbl-sm" style="margin:14px 0 8px">Not right? Choose your location</div>
+    <!-- Nearby real places -->
+    <div id="gps-nearby" style="display:none">
+      <div class="sec-lbl-sm" style="margin:18px 0 8px">📍 Places near you — tap where you are</div>
+      <div id="gps-nearby-list"></div>
+    </div>
+    <div class="sec-lbl-sm" style="margin:14px 0 8px">Or choose a location type</div>
     <div class="loc-grid" id="gps-loc-grid" style="padding:0"></div>
   </div>
 
@@ -3183,15 +3196,34 @@ function matchNominatimToLoc(data) {
   const displayName = (data.display_name || '').toLowerCase();
   const addressType = (data.addresstype || '').toLowerCase();
   const cls = (data.class || '').toLowerCase();
+  const name = (data.name || '').toLowerCase();
+  // extratags carries brand/shop info when available
+  const et = data.extratags || {};
+  const brand = (et.brand || '').toLowerCase();
+  const shop = (et.shop || '').toLowerCase();
+  const amenity = (et.amenity || '').toLowerCase();
 
-  const hay = [type, category, displayName, addressType, cls];
+  const hay = [type, category, displayName, addressType, cls, name, brand, shop, amenity];
   const has = (keys) => keys.some(k => hay.some(h => h.includes(k)));
 
-  if (has(['supermarket','grocery','convenience'])) return LOCS.find(l => l.id === 'supermarket');
-  if (has(['mall','department_store','shopping'])) return LOCS.find(l => l.id === 'mall');
+  // 1) Well-known US chain names first (most reliable signal).
+  const supermarketChains = ['costco','sam\'s club','sams club','walmart','target','kroger','publix','aldi','trader joe','whole foods','safeway','wegmans','meijer','food lion','h-e-b','heb','sprouts','bj\'s','winco'];
+  const restaurantChains = ['mcdonald','starbucks','chick-fil-a','chick fil a','wendy','burger king','taco bell','subway','chipotle','panera','dunkin','popeyes','kfc','panda express','olive garden','applebee','ihop','waffle house','five guys','dairy queen','sonic','arby','domino','pizza hut','papa john'];
+  const mallNames = ['mall','outlets','outlet mall','shopping center','shopping centre','galleria','plaza'];
+
+  if (supermarketChains.some(c => name.includes(c) || brand.includes(c) || displayName.includes(c)))
+    return LOCS.find(l => l.id === 'supermarket');
+  if (restaurantChains.some(c => name.includes(c) || brand.includes(c) || displayName.includes(c)))
+    return LOCS.find(l => l.id === 'restaurant');
+  if (mallNames.some(c => name.includes(c) || displayName.includes(c)))
+    return LOCS.find(l => l.id === 'mall');
+
+  // 2) OSM type / category keywords.
+  if (has(['supermarket','grocery','convenience','wholesale','warehouse','department_store','variety_store'])) return LOCS.find(l => l.id === 'supermarket');
+  if (has(['mall','shopping'])) return LOCS.find(l => l.id === 'mall');
   if (has(['playground'])) return LOCS.find(l => l.id === 'playground');
-  if (has(['park','garden','recreation_ground','recreation'])) return LOCS.find(l => l.id === 'park');
-  if (has(['restaurant','cafe','fast_food','food','bar','pub'])) return LOCS.find(l => l.id === 'restaurant');
+  if (has(['park','garden','recreation_ground','recreation','nature_reserve'])) return LOCS.find(l => l.id === 'park');
+  if (has(['restaurant','cafe','fast_food','food_court','food','bar','pub','ice_cream','bakery'])) return LOCS.find(l => l.id === 'restaurant');
   if (has(['library'])) return LOCS.find(l => l.id === 'library');
   if (has(['post_office','post office'])) return LOCS.find(l => l.id === 'postoffice');
   if (has(['school','college','university','kindergarten'])) return LOCS.find(l => l.id === 'school');
@@ -3206,10 +3238,14 @@ async function matchLocationToPlace(lat, lng) {
 
   try {
     const resp = await fetch(
-      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=18`,
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&zoom=18&extratags=1&namedetails=1`,
       { headers: { 'Accept-Language': 'en' } }
     );
     const data = await resp.json();
+    // Surface the place's own name for brand matching
+    if (data.namedetails && data.namedetails.name && !data.name) {
+      data.name = data.namedetails.name;
+    }
     matchedLoc = matchNominatimToLoc(data);
   } catch(err) {
     console.log('Nominatim error:', err);
@@ -3218,12 +3254,94 @@ async function matchLocationToPlace(lat, lng) {
 
   document.getElementById('gps-loading').style.display = 'none';
   showGpsResult(matchedLoc, lat, lng);
+  // Also look up real named places nearby (best-effort, non-blocking)
+  fetchNearbyPlaces(lat, lng);
+}
+
+// Query OpenStreetMap Overpass for named places within ~120m, classify each,
+// and render tappable cards. Free, no API key. Best-effort: stays hidden on failure.
+async function fetchNearbyPlaces(lat, lng) {
+  const nearbyWrap = document.getElementById('gps-nearby');
+  const listEl = document.getElementById('gps-nearby-list');
+  if (!nearbyWrap || !listEl) return;
+
+  // Overpass QL: shops, amenities, leisure, offices with a name, within radius.
+  const radius = 150;
+  const q = `[out:json][timeout:10];(` +
+    `nwr(around:${radius},${lat},${lng})[shop][name];` +
+    `nwr(around:${radius},${lat},${lng})[amenity~"restaurant|cafe|fast_food|library|post_office|bar|pub|ice_cream|food_court"][name];` +
+    `nwr(around:${radius},${lat},${lng})[leisure~"park|playground|garden|nature_reserve"][name];` +
+    `nwr(around:${radius},${lat},${lng})[amenity~"school|college|university|kindergarten"][name];` +
+    `);out center 25;`;
+
+  try {
+    const resp = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'data=' + encodeURIComponent(q),
+    });
+    if (!resp.ok) throw new Error('Overpass ' + resp.status);
+    const json = await resp.json();
+    const els = (json.elements || []);
+
+    // Build classified, de-duplicated list
+    const seen = new Set();
+    const places = [];
+    for (const el of els) {
+      const t = el.tags || {};
+      const nm = t.name;
+      if (!nm || seen.has(nm.toLowerCase())) continue;
+
+      // Reuse the shared matcher by mapping OSM tags into its expected shape
+      const data = {
+        type: t.shop || t.amenity || t.leisure || '',
+        class: t.shop ? 'shop' : (t.amenity ? 'amenity' : (t.leisure ? 'leisure' : '')),
+        category: t.shop ? 'shop' : (t.amenity ? 'amenity' : ''),
+        display_name: nm,
+        name: nm,
+        extratags: { shop: t.shop || '', amenity: t.amenity || '', brand: t.brand || '' },
+      };
+      const loc = matchNominatimToLoc(data);
+      if (!loc) continue; // skip places we can't map to an activity set
+      seen.add(nm.toLowerCase());
+      places.push({ name: nm, loc });
+      if (places.length >= 6) break;
+    }
+
+    if (!places.length) { nearbyWrap.style.display = 'none'; return; }
+
+    listEl.innerHTML = '';
+    places.forEach(p => {
+      const card = document.createElement('button');
+      card.className = 'nearby-card';
+      card.innerHTML =
+        `<span class="nearby-emoji">${p.loc.emoji}</span>` +
+        `<span class="nearby-body"><span class="nearby-name">${p.name}</span>` +
+        `<span class="nearby-type">${p.loc.name}</span></span>` +
+        `<span class="nearby-arrow">›</span>`;
+      card.onclick = () => { S.learn_loc = p.loc; pickLearnLoc(p.loc); };
+      listEl.appendChild(card);
+    });
+    nearbyWrap.style.display = 'block';
+
+  } catch (err) {
+    console.log('Overpass nearby lookup failed:', err);
+    nearbyWrap.style.display = 'none'; // silently fall back to type grid
+  }
 }
 
 function showGpsResult(detectedLoc, lat, lng) {
   const resultEl = document.getElementById('gps-result');
   const detectedCard = document.getElementById('gps-detected-card');
   resultEl.style.display = 'block';
+
+  // Hide stale nearby list until a fresh lookup populates it
+  const nearbyWrap = document.getElementById('gps-nearby');
+  if (nearbyWrap) nearbyWrap.style.display = 'none';
+
+  // Remove any confirm button left from a previous detection
+  const oldBtn = resultEl.querySelector('.gps-confirm-btn');
+  if (oldBtn) oldBtn.remove();
 
   if (detectedLoc) {
     // Show detected location with confirm button
@@ -3295,6 +3413,8 @@ function resetGpsScreen() {
   document.getElementById('gps-loading').style.display = 'none';
   document.getElementById('gps-result').style.display = 'none';
   document.getElementById('gps-error').style.display = 'none';
+  const nb = document.getElementById('gps-nearby');
+  if (nb) nb.style.display = 'none';
   // Also reset address lookup
   resetAddressScreen();
 }
@@ -3336,9 +3456,9 @@ async function lookupAddress() {
   document.getElementById('addr-error').style.display = 'none';
 
   try {
-    // Forward geocode via Nominatim. extratags/addressdetails help classification.
+    // Forward geocode via Nominatim. extratags/namedetails help classification.
     const resp = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&addressdetails=1&extratags=1&limit=1`,
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&addressdetails=1&extratags=1&namedetails=1&limit=1`,
       { headers: { 'Accept-Language': 'en' } }
     );
     const arr = await resp.json();
@@ -3358,6 +3478,8 @@ async function lookupAddress() {
       category: place.class,
       addresstype: place.addresstype,
       display_name: place.display_name,
+      name: (place.namedetails && place.namedetails.name) || place.name || '',
+      extratags: place.extratags || {},
     };
     const matched = matchNominatimToLoc(data);
     showAddrResult(matched, place.display_name);
